@@ -57,7 +57,7 @@ typedef struct PackHead
     WORD dwIPSrc2;
     WORD dwIPDes;         //目的地址
     WORD dwIPDes2;
-    //BYTE Options;          //选项
+    //BYTE Options;          //选项s 
     WORD SrcPort;       //源端口
     WORD DesPort;       //目的端口
     WORD SeqNum;
