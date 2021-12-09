@@ -101,6 +101,8 @@ typedef struct _traffic_identify_parameter
     unsigned int burst_list_len;
     unsigned int ack_list_len;
 
+    unsigned int run_mode;
+
     KafkaProducer*	kafka_producer;
     
     char kafka_brokers[512];

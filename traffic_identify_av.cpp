@@ -57,6 +57,8 @@ int traffic_identify_para_read_main_conf(char* filename)
 	MESA_load_profile_uint_def(filename, "BURST", "burst_list_len", &traffic_identify_para.burst_list_len,20);
 	MESA_load_profile_uint_def(filename, "BURST", "burst_feature_output_chunk_count", &traffic_identify_para.burst_feature_output_chunk_count,15);
 
+	MESA_load_profile_uint_def(filename, "MODE", "run_mode", &traffic_identify_para.run_mode, 1);
+
 	traffic_identify_para.log_handle = MESA_create_runtime_log_handle(log_filename,log_level);
 
 	if(traffic_identify_para.log_handle == NULL)
@@ -147,8 +149,14 @@ int init_pme(void** param, int thread_seq ,struct streaminfo *a_stream,stream_ty
 
 	identifier_pme->ML_ACK_labeled_flag=0;
 
-	//gettimeofday(&cur_time, NULL);
-	get_rawpkt_opt_from_streaminfo(a_stream, RAW_PKT_GET_TIMESTAMP, &cur_time);
+	if (traffic_identify_para.run_mode==0)
+	{
+		get_rawpkt_opt_from_streaminfo(a_stream, RAW_PKT_GET_TIMESTAMP, &cur_time);
+	}
+	else
+	{
+		gettimeofday(&cur_time, NULL);
+	}
 	identifier_pme->pre_time_s2c=cur_time.tv_sec*1000 + cur_time.tv_usec/1000;
 	identifier_pme->pre_time_c2s=cur_time.tv_sec*1000 + cur_time.tv_usec/1000;
 
@@ -1038,17 +1046,26 @@ UCHAR traffic_process(struct streaminfo *a_stream,  void **pme, int thread_seq,v
 
 		case OP_STATE_DATA://record len and time
 			identifier_pme = (traffic_identify_pmeinfo*)*pme;
-			//gettimeofday(&cur_time_str, NULL);
-			ret=get_rawpkt_opt_from_streaminfo(a_stream, RAW_PKT_GET_TIMESTAMP, &cur_time_str);
-			if (ret>=0)
-				cur_time=cur_time_str.tv_sec*1000 + cur_time_str.tv_usec/1000;
-			else
+			
+			if (traffic_identify_para.run_mode==0)
 			{
-				if (identifier_pme->pre_time_c2s<identifier_pme->pre_time_s2c)
-					cur_time=identifier_pme->pre_time_s2c;
+				ret=get_rawpkt_opt_from_streaminfo(a_stream, RAW_PKT_GET_TIMESTAMP, &cur_time_str);
+				if (ret>=0)
+					cur_time=cur_time_str.tv_sec*1000 + cur_time_str.tv_usec/1000;
 				else
-					cur_time=identifier_pme->pre_time_c2s;
+				{
+					if (identifier_pme->pre_time_c2s<identifier_pme->pre_time_s2c)
+						cur_time=identifier_pme->pre_time_s2c;
+					else
+						cur_time=identifier_pme->pre_time_c2s;
+				}
 			}
+			else
+			{	
+				gettimeofday(&cur_time_str, NULL);
+				cur_time=cur_time_str.tv_sec*1000 + cur_time_str.tv_usec/1000;
+			}
+
 			time_duration=a_stream->ptcpdetail->lastmtime-a_stream->ptcpdetail->createtime;
 			identifier_pme->payload_cnt ++;
 			
