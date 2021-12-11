@@ -1,9 +1,5 @@
-/*在使用规则判断、ACK判断、Burst下行判断的基础上加入burst上行特征规则判断
-其中burst特征为上下行块的负载与包数
-通过块个数、负载大小、包数三个阈值进行burst特征判断
-2021.12.6新加入记录拥塞窗口、流负载、下行块时间间隔特征
-2021.12.7修改配置项名称以及修改数组大小值通过配置项确定
-2021.12.8
+/*
+1.1版本，加入分析burst块预测所需时间
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -159,6 +155,7 @@ int init_pme(void** param, int thread_seq ,struct streaminfo *a_stream,stream_ty
 	}
 	identifier_pme->pre_time_s2c=cur_time.tv_sec*1000 + cur_time.tv_usec/1000;
 	identifier_pme->pre_time_c2s=cur_time.tv_sec*1000 + cur_time.tv_usec/1000;
+	identifier_pme->creat_time=cur_time.tv_sec*1000 + cur_time.tv_usec/1000;
 
 	identifier_pme->burst_chunk_count=0;
 	if(NULL == identifier_pme->cjson_obj)
@@ -178,7 +175,8 @@ int init_pme(void** param, int thread_seq ,struct streaminfo *a_stream,stream_ty
 	memset(identifier_pme->burst_time_interval_s2c,0,sizeof(long)*traffic_identify_para.burst_list_len);
 	identifier_pme->ack_list=(ack_str*)dictator_malloc(thread_seq,sizeof(ack_str)*traffic_identify_para.ack_list_len);
 	memset(identifier_pme->ack_list,0,sizeof(ack_str)*traffic_identify_para.ack_list_len);
-	
+	identifier_pme->time_duration_burst_list_s2c=(long*)dictator_malloc(thread_seq,sizeof(long)*traffic_identify_para.burst_list_len);
+	memset(identifier_pme->time_duration_burst_list_s2c,0,sizeof(long)*traffic_identify_para.burst_list_len);
 	*param=identifier_pme;
 	return 0;
 }
@@ -224,6 +222,11 @@ void release_pme(void** param, int thread_seq)
 			dictator_free(thread_seq, identifier_pme->ack_list);
 			identifier_pme->ack_list = NULL;
 		}
+		if(NULL != identifier_pme->time_duration_burst_list_s2c)
+		{
+			dictator_free(thread_seq, identifier_pme->time_duration_burst_list_s2c);
+			identifier_pme->time_duration_burst_list_s2c = NULL;
+		}
 		dictator_free(thread_seq, identifier_pme);
 		identifier_pme = NULL;
 	}   
@@ -253,7 +256,7 @@ void send_kafka(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a
 			MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_FATAL, TRAFFIC_IDENTIFY_AV,
 				"{%s:%d} Kafka SendData error.",__FILE__,__LINE__);		
 		}
-		//MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_DEBUG, TRAFFIC_IDENTIFY_AV,"%s send_kafka JSON is %s.",printaddr(&a_stream->addr,thread_seq),out); 
+		MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_DEBUG, TRAFFIC_IDENTIFY_AV,"%s send_kafka JSON is %s.",printaddr(&a_stream->addr,thread_seq),out); 
 		
 		break;
 	case 1://just 1 send
@@ -264,7 +267,7 @@ void send_kafka(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a
 				MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_FATAL, TRAFFIC_IDENTIFY_AV,
 					"{%s:%d} Kafka SendData error.",__FILE__,__LINE__);		
 			}
-			//MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_DEBUG, TRAFFIC_IDENTIFY_AV,"%s send_kafka JSON is %s.",printaddr(&a_stream->addr,thread_seq),out); 			
+			MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_DEBUG, TRAFFIC_IDENTIFY_AV,"%s send_kafka JSON is %s.",printaddr(&a_stream->addr,thread_seq),out); 			
 		}
 		break;
 	default:
@@ -327,6 +330,9 @@ void structure_json_burst(struct streaminfo *a_stream,  void **pme, int thread_s
 		cJSON_AddItemToObject(identifier_pme->cjson_obj, "burst_payload_c2s", cJSON_CreateLongArray(identifier_pme->payload_burst_list_c2s,traffic_identify_para.burst_feature_output_chunk_count));
 		cJSON_AddItemToObject(identifier_pme->cjson_obj, "burst_paknum_c2s", cJSON_CreateIntArray(identifier_pme->paknum_burst_list_c2s,traffic_identify_para.burst_feature_output_chunk_count));
 		cJSON_AddItemToObject(identifier_pme->cjson_obj, "burst_time_interval_s2c", cJSON_CreateLongArray(identifier_pme->burst_time_interval_s2c,traffic_identify_para.burst_feature_output_chunk_count));
+		cJSON_AddItemToObject(identifier_pme->cjson_obj, "time_duration_burst_list_s2c", cJSON_CreateLongArray(identifier_pme->time_duration_burst_list_s2c,traffic_identify_para.burst_feature_output_chunk_count));
+		cJSON_AddNumberToObject(identifier_pme->cjson_obj, "time_duration_burst", identifier_pme->time_duration_burst);
+		cJSON_AddNumberToObject(identifier_pme->cjson_obj, "burst_paknum_sum", identifier_pme->burst_paknum_sum);	
 	}
 }
 
@@ -489,6 +495,7 @@ void record_burst(struct streaminfo *a_stream,  void **pme, int thread_seq,void 
 			time_duration=cur_time-identifier_pme->pre_time_s2c;
 			if (time_duration>traffic_identify_para.burst_interval)
 			{
+				identifier_pme->time_duration_burst_list_s2c[identifier_pme->burst_chunk_count]=identifier_pme->pre_time_s2c-identifier_pme->creat_time;
 				identifier_pme->burst_time_interval_s2c[identifier_pme->burst_chunk_count]=time_duration;
 				identifier_pme->burst_chunk_count++;
 				/*
@@ -1010,17 +1017,21 @@ void write_csv(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_
 void burst_label(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_packet,stream_type a_stream_type)
 {
 	int pass_chunk=0;
+	int paknum_sum=0;
 	traffic_identify_pmeinfo* identifier_pme =(traffic_identify_pmeinfo*)*pme;
 	if (identifier_pme->burst_chunk_count<int(traffic_identify_para.burst_chunkcount_threshlod))
 		return;
 	for (int i=0;i<identifier_pme->burst_chunk_count;i++)
 	{
+		paknum_sum=paknum_sum+identifier_pme->paknum_burst_list_s2c[i];
 		if (identifier_pme->payload_burst_list_s2c[i]>=int(traffic_identify_para.burst_payload_threshlod) && identifier_pme->paknum_burst_list_s2c[i]>=int(traffic_identify_para.burst_paknum_threshlod))
 		{
 			pass_chunk++;
 		}
 		if (pass_chunk>=int(traffic_identify_para.burst_chunkcount_threshlod))
 		{
+			identifier_pme->burst_paknum_sum=paknum_sum;
+			identifier_pme->time_duration_burst=identifier_pme->time_duration_burst_list_s2c[i];
 			identifier_pme->burst_label=1;
 			return;
 		}
@@ -1155,12 +1166,17 @@ int TRAFFIC_IDENTIFY_AV_INIT(void)
 
 	if(traffic_identify_para.csv_record_flag==1)//creat csv
 	{
+		/*
 		char filename[128]={0};
 		time_t curtime;
 		time(&curtime);
 		struct tm *lt;
 		lt= localtime (&curtime);
 		snprintf(filename,128,"tilog/traffic_identify_av_%d-%d-%d-%d-%d-%d.csv",lt->tm_year+1900, lt->tm_mon+1, lt->tm_mday, lt->tm_hour, lt->tm_min, lt->tm_sec);
+		traffic_identify_para.file=fopen(filename,"w");
+		*/
+		char filename[128]={0};
+		snprintf(filename,128,"MLdata/record.txt");
 		traffic_identify_para.file=fopen(filename,"w");
 	}
 	return 0;

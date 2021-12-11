@@ -139,7 +139,8 @@ typedef struct _traffic_identify_pme
     char SNI[1024];
     
     struct ack_str* ack_list;
-    
+
+    unsigned long long creat_time;
     unsigned long long pre_time_s2c;
     unsigned long long pre_time_c2s;
     int burst_chunk_count;
@@ -148,6 +149,9 @@ typedef struct _traffic_identify_pme
     int* paknum_burst_list_s2c;
     long* payload_burst_list_c2s;
     int* paknum_burst_list_c2s;
+    long* time_duration_burst_list_s2c;
+    long time_duration_burst;
+    int burst_paknum_sum;
 
     cJSON*	cjson_obj;
 

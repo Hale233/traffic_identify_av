@@ -1,0 +1,5 @@
+traffic_identify_av.o
+traffic_identify_av.so
+data/
+cJSON.d
+cJSON.o
