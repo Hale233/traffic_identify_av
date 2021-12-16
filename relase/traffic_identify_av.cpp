@@ -941,10 +941,33 @@ void ML_feature_record(struct streaminfo *a_stream,  void **pme, int thread_seq,
 	long win_c2s_mean=0;
 	long win_s2c_mean=0;
 
-	int c2s_pak_count=a_stream->ptcpdetail->serverpktnum;
-	int s2c_pak_count=a_stream->ptcpdetail->clientpktnum;
-	long payload_bytes_c2s=a_stream->ptcpdetail->serverbytes+c2s_pak_count*58;
-	long payload_bytes_s2c=a_stream->ptcpdetail->clientbytes+s2c_pak_count*58;
+	int c2s_pak_count=0;
+	int s2c_pak_count=0;
+	long payload_bytes_c2s=0;
+	long payload_bytes_s2c=0;
+
+	switch (a_stream_type)
+	{
+	case TCP:
+		c2s_pak_count=a_stream->ptcpdetail->serverpktnum;
+		s2c_pak_count=a_stream->ptcpdetail->clientpktnum;
+		payload_bytes_c2s=a_stream->ptcpdetail->serverbytes+c2s_pak_count*58;
+		payload_bytes_s2c=a_stream->ptcpdetail->clientbytes+s2c_pak_count*58;
+		break;
+	case UDP:
+		c2s_pak_count=a_stream->pudpdetail->serverpktnum;
+		s2c_pak_count=a_stream->pudpdetail->clientpktnum;
+		payload_bytes_c2s=a_stream->pudpdetail->serverbytes+c2s_pak_count*42;
+		payload_bytes_s2c=a_stream->pudpdetail->clientbytes+s2c_pak_count*42;
+		break;
+	
+	default:
+		c2s_pak_count=a_stream->ptcpdetail->serverpktnum;
+		s2c_pak_count=a_stream->ptcpdetail->clientpktnum;
+		payload_bytes_c2s=a_stream->ptcpdetail->serverbytes+c2s_pak_count*58;
+		payload_bytes_s2c=a_stream->ptcpdetail->clientbytes+s2c_pak_count*58;
+		break;
+	}
 
 	identifier_pme->s2c_payload_max=identifier_pme->s2c_payload_max+50;
 	identifier_pme->c2s_payload_max=identifier_pme->c2s_payload_max+50;
