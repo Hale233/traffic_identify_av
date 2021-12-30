@@ -1,3 +1,2 @@
-1.1/KafkaProducer.o
-relase/cJSON.o
-relase/KafkaProducer.o
+*.o
+*.so
