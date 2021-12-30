@@ -295,6 +295,7 @@ void structure_json_base(struct streaminfo *a_stream,  void **pme, int thread_se
 	char d_ip_str[64] = {0};
 	struct stream_tuple4_v4 *paddr;
 	struct stream_tuple4_v6 *paddr6;
+	
 
 	if(a_stream->addr.addrtype==ADDR_TYPE_IPV4)
 	{
