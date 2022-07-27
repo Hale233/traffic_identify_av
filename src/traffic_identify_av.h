@@ -82,6 +82,7 @@ typedef struct _traffic_identify_parameter
     unsigned int kafka_output_feature_state;
     unsigned int kafka_output_stream_state;
     unsigned int	send_kafka_flag;
+    unsigned int use_kafka;
     short	burst_timestp_type;//0:rpt_time,1:sys_time
     short	identifier_type;//bit expression
 	unsigned int	min_pktsnum;// > min_pktsnum for identify

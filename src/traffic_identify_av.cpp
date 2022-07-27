@@ -35,6 +35,7 @@ int traffic_identify_para_read_main_conf(char* filename)
 	MESA_load_profile_uint_def(filename, "ACK", "ack_payload_threshlod", &traffic_identify_para.ack_payload_threshlod, 100000);
 	MESA_load_profile_uint_def(filename, "ACK", "ack_paknum_threshlod", &traffic_identify_para.ack_paknum_threshlod, 30);
 	
+	MESA_load_profile_uint_def(filename, "KAFKA", "use_kafka", &traffic_identify_para.use_kafka,0);
 	MESA_load_profile_uint_def(filename, "KAFKA", "send_kafka_flag", &traffic_identify_para.send_kafka_flag,1);
 	MESA_load_profile_uint_def(filename, "KAFKA", "kafka_output_stream_state", &traffic_identify_para.kafka_output_stream_state,1);
 	MESA_load_profile_uint_def(filename, "KAFKA", "kafka_output_feature_state", &traffic_identify_para.kafka_output_feature_state, 1);	
@@ -67,45 +68,48 @@ int traffic_identify_para_read_main_conf(char* filename)
 		return -1;
 	}
 
-	if(traffic_identify_para.send_kafka_flag)
-	{	
-		if(MESA_load_profile_string_nodef(filename, "KAFKA", "kafka_brokers", traffic_identify_para.kafka_brokers, sizeof(traffic_identify_para.kafka_brokers)) < 0)
+	if (traffic_identify_para.use_kafka==1)
+	{
+		if(traffic_identify_para.send_kafka_flag)
+		{	
+			if(MESA_load_profile_string_nodef(filename, "KAFKA", "kafka_brokers", traffic_identify_para.kafka_brokers, sizeof(traffic_identify_para.kafka_brokers)) < 0)
+			{
+				printf("get [NETWORK]KafkaBrokers error.\n");
+				return -1;	
+			}
+			printf("%s \n",traffic_identify_para.kafka_brokers);
+		}
+
+		traffic_identify_para.kafka_producer = new KafkaProducer(traffic_identify_para.kafka_brokers);
+		if(NULL==traffic_identify_para.kafka_producer)
 		{
-			printf("get [NETWORK]KafkaBrokers error.\n");
+			printf("KafkaProducer error.\n");
 			return -1;	
 		}
-		printf("%s \n",traffic_identify_para.kafka_brokers);
-	}
-
-	traffic_identify_para.kafka_producer = new KafkaProducer(traffic_identify_para.kafka_brokers);
-	if(NULL==traffic_identify_para.kafka_producer)
-	{
-		printf("KafkaProducer error.\n");
-		return -1;	
-	}
-	if(0!=traffic_identify_para.kafka_producer->KafkaConnection())
-	{	
-		printf("KafkaConnection %s error.\n", traffic_identify_para.kafka_brokers);
+		if(0!=traffic_identify_para.kafka_producer->KafkaConnection())
+		{	
+			printf("KafkaConnection %s error.\n", traffic_identify_para.kafka_brokers);
+			MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_FATAL, TRAFFIC_IDENTIFY_AV, 
+									"{%s:%d} KafkaConnection %s error.", 
+									__FILE__,__LINE__, traffic_identify_para.kafka_brokers);
+		}
+		else
+		{
+			printf("KafkaConnection %s succ.\n", traffic_identify_para.kafka_brokers);
+			MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_FATAL, TRAFFIC_IDENTIFY_AV, 
+									"{%s:%d} KafkaConnection %s succ.", 
+									__FILE__,__LINE__, traffic_identify_para.kafka_brokers);
+		}
+		MESA_load_profile_string_def(filename, "KAFKA", "kafka_topic", traffic_identify_para.topic_name, sizeof(traffic_identify_para.topic_name),"TRAFFIC_IDENTIFY");
+		if((traffic_identify_para.kafka_producer->CreateTopicHandle(traffic_identify_para.topic_name)) == NULL)
+		{
+			printf("Kafka CreateTopicHandle %s failed.", traffic_identify_para.topic_name);
+			return -1;
+		}
 		MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_FATAL, TRAFFIC_IDENTIFY_AV, 
-								"{%s:%d} KafkaConnection %s error.", 
-								__FILE__,__LINE__, traffic_identify_para.kafka_brokers);
+									"{%s:%d} Kafka CreateTopicHandle %s succ.", 
+									__FILE__,__LINE__, traffic_identify_para.topic_name);
 	}
-	else
-	{
-		printf("KafkaConnection %s succ.\n", traffic_identify_para.kafka_brokers);
-		MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_FATAL, TRAFFIC_IDENTIFY_AV, 
-								"{%s:%d} KafkaConnection %s succ.", 
-								__FILE__,__LINE__, traffic_identify_para.kafka_brokers);
-	}
-	MESA_load_profile_string_def(filename, "KAFKA", "kafka_topic", traffic_identify_para.topic_name, sizeof(traffic_identify_para.topic_name),"TRAFFIC_IDENTIFY");
-	if((traffic_identify_para.kafka_producer->CreateTopicHandle(traffic_identify_para.topic_name)) == NULL)
-	{
-		printf("Kafka CreateTopicHandle %s failed.", traffic_identify_para.topic_name);
-		return -1;
-	}
-	MESA_handle_runtime_log(traffic_identify_para.log_handle, RLOG_LV_FATAL, TRAFFIC_IDENTIFY_AV, 
-								"{%s:%d} Kafka CreateTopicHandle %s succ.", 
-								__FILE__,__LINE__, traffic_identify_para.topic_name);
 	return 0;
 }
 
@@ -558,7 +562,6 @@ void record_ack(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a
 			{
 				return;
 			}
-
 			unsigned long ack_num=get_ack(a_packet,a_stream_type);
 			if (ack_num==identifier_pme->current_ack_num)
 			{
@@ -568,6 +571,7 @@ void record_ack(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a
 			else
 			{
 				flag=0;
+				//后续应该为字典，或哈希索引
 				for(i=0;i<=identifier_pme->ack_count;i++)
 				{
 					if(identifier_pme->ack_list[i].ack_id==ack_num)
@@ -1039,6 +1043,28 @@ void write_csv(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_
 	fprintf(traffic_identify_para.file,"\n");
 }
 
+void write_csv_ack(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_packet,stream_type a_stream_type)
+{
+	traffic_identify_pmeinfo* identifier_pme =(traffic_identify_pmeinfo*)*pme;
+	int chunk_count=0;
+	for(int i=0;i<=identifier_pme->ack_count;i++)
+	{
+		if (identifier_pme->ack_list[i].payload_bytes> 6000)
+			chunk_count++;
+	}
+	if (chunk_count>=5)
+	{
+		fprintf(traffic_identify_para.file,"%s\r\n",printaddr(&a_stream->addr,thread_seq));
+		for(int j=0;j<=identifier_pme->ack_count;j++)
+		{
+			if (identifier_pme->ack_list[j].payload_bytes> 6000)
+				fprintf(traffic_identify_para.file,"%ld\r\n",identifier_pme->ack_list[j].payload_bytes);
+		}
+	}
+
+	//fprintf(traffic_identify_para.file,"\n");
+}
+
 void burst_label(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_packet,stream_type a_stream_type)
 {
 	int pass_chunk=0;
@@ -1068,6 +1094,8 @@ UCHAR traffic_process(struct streaminfo *a_stream,  void **pme, int thread_seq,v
 	memset(pre_feature,0,sizeof(pre_feature));
 	struct timeval cur_time_str;
 	unsigned long long cur_time;
+	string video_tuple=printaddr(&a_stream->addr,thread_seq);
+	string target_sni="1";
 
 	switch (a_stream->pktstate)
 	{
@@ -1116,7 +1144,8 @@ UCHAR traffic_process(struct streaminfo *a_stream,  void **pme, int thread_seq,v
 			{
 				identifier_pme->pre_time_s2c=cur_time;
 			}
-
+			record_ack(a_stream,pme,thread_seq,a_packet,a_stream_type);
+			/* 控制提取前n秒的ack块
 			if (time_duration<traffic_identify_para.time_win_size)
 			{
 				record_ack(a_stream,pme,thread_seq,a_packet,a_stream_type);
@@ -1127,6 +1156,10 @@ UCHAR traffic_process(struct streaminfo *a_stream,  void **pme, int thread_seq,v
 				{
 					case 0:
 						identifier_pme->ML_ACK_labeled_flag=1;
+						if (video_tuple.find("51042")!=-1)
+						{
+							write_csv_ack(a_stream,pme,thread_seq,a_packet,a_stream_type);
+						}
 						ACK_label_fun(a_stream,pme,thread_seq,a_packet,a_stream_type);
 					case 1:
 						break;
@@ -1134,16 +1167,22 @@ UCHAR traffic_process(struct streaminfo *a_stream,  void **pme, int thread_seq,v
 						break;
 				}
 			}
+			*/
 			break;
 
 		case OP_STATE_CLOSE:// model predict and write csv
 			identifier_pme = (traffic_identify_pmeinfo*)*pme;
+			target_sni=identifier_pme->SNI;
 			//record_burst(a_stream,pme,thread_seq,a_packet,a_stream_type,cur_time);
 			
 			switch (identifier_pme->ML_ACK_labeled_flag)
 			{
 				case 0:
 					identifier_pme->ML_ACK_labeled_flag=1;
+					if (target_sni.find("googlevideo")!=-1)
+					{
+						write_csv_ack(a_stream,pme,thread_seq,a_packet,a_stream_type);
+					}
 					ACK_label_fun(a_stream,pme,thread_seq,a_packet,a_stream_type);
 				case 1:
 					break;
@@ -1162,12 +1201,14 @@ UCHAR traffic_process(struct streaminfo *a_stream,  void **pme, int thread_seq,v
 			structure_json_burst(a_stream,pme,thread_seq,a_packet,a_stream_type);
 			structure_json_ML(a_stream,pme,thread_seq,a_packet,a_stream_type,pre_feature);
 			structure_json_label(a_stream,pme,thread_seq,a_packet,a_stream_type);
-			
+			/*
 			if(traffic_identify_para.csv_record_flag == 1)
 			{
 				write_csv(a_stream,pme,thread_seq,a_packet,a_stream_type);
 			}
-			send_kafka(a_stream,pme,thread_seq,a_packet,a_stream_type);
+			*/
+			if (traffic_identify_para.use_kafka==1)
+				send_kafka(a_stream,pme,thread_seq,a_packet,a_stream_type);
 			release_pme(pme,thread_seq);
 			return APP_STATE_DROPME;
 		default:
@@ -1205,8 +1246,8 @@ void TRAFFIC_IDENTIFY_AV_DESTROY(void)
 
 UCHAR TRAFFIC_IDENTIFY_AV_UDP_ENTRY(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_packet)
 {
-	return traffic_process(a_stream,pme,thread_seq,a_packet,UDP);
-	//return APP_STATE_DROPME;
+	//return traffic_process(a_stream,pme,thread_seq,a_packet,UDP);
+	return APP_STATE_DROPME;
 }
 
 UCHAR TRAFFIC_IDENTIFY_AV_TCP_ENTRY(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_packet)
