@@ -33,6 +33,9 @@ struct ack_str
     long payload_bytes;
     unsigned int pak_count;
     unsigned long ack_id;
+    unsigned long min_seq;
+    unsigned long max_seq;
+    long max_seq_payload;
 };
 
 typedef enum

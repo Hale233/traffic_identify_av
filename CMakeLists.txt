@@ -32,4 +32,4 @@ set_target_properties(${plugin_name}  PROPERTIES PREFIX "")
 install(TARGETS ${plugin_name} LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/plug/business/${plugin_name})
 install(FILES bin/${plugin_name}.inf DESTINATION ${CMAKE_INSTALL_PREFIX}/plug/business/${plugin_name})
 
-include(Package)
+#include(Package)

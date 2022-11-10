@@ -4,7 +4,8 @@
 2021.12.6新加入记录拥塞窗口、流负载、下行块时间间隔特征
 2021.12.7修改配置项名称以及修改数组大小值通过配置项确定
 2021.12.10新增输出字段流创建与淘汰时间
-2022.12.10增加视频指纹提取功能
+2022.10.10增加视频指纹提取功能
+2022.11.10增加过滤重传包的功能
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -463,6 +464,32 @@ unsigned long get_ack(void *a_packet,stream_type a_stream_type)
 	return 0;
 }
 
+unsigned long get_seq(void *a_packet,stream_type a_stream_type)
+{
+	pak_HEAD pak_head;
+	switch(a_stream_type)
+		{
+		case TCP:
+			if (a_packet!=NULL)
+			{
+				pak_head=*(pak_HEAD*)a_packet;
+				unsigned short SEQ[2]={ntohs(pak_head.SeqNum2),ntohs(pak_head.SeqNum)};
+				unsigned long val = *(unsigned long*)SEQ;
+				return val;
+			}
+			else 
+				return 0;
+			break;
+		case UDP:
+			return 0;
+			break;
+		default:
+			return 0;
+			break;
+		}
+	return 0;
+}
+
 void record_burst(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_packet,stream_type a_stream_type,unsigned long long cur_time)
 {
 	traffic_identify_pmeinfo* identifier_pme = (traffic_identify_pmeinfo*)*pme;
@@ -564,10 +591,21 @@ void record_ack(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a
 				return;
 			}
 			unsigned long ack_num=get_ack(a_packet,a_stream_type);
+			unsigned long seq_num=get_seq(a_packet,a_stream_type);
 			if (ack_num==identifier_pme->current_ack_num)
 			{
-				identifier_pme->ack_list[identifier_pme->ack_count].payload_bytes=identifier_pme->ack_list[identifier_pme->ack_count].payload_bytes+a_stream->ptcpdetail->datalen;
+				identifier_pme->ack_list[identifier_pme->ack_count].payload_bytes +=a_stream->ptcpdetail->datalen;
 				identifier_pme->ack_list[identifier_pme->ack_count].pak_count++;
+				//统计当前ack块种最大以及最小的的seq号，用于后续计算去除重传包后的ack块长度
+				if (identifier_pme->ack_list[identifier_pme->ack_count].min_seq==0)
+				{
+					identifier_pme->ack_list[identifier_pme->ack_count].min_seq=seq_num;
+				}
+				if (identifier_pme->ack_list[identifier_pme->ack_count].max_seq<seq_num)
+				{
+					identifier_pme->ack_list[identifier_pme->ack_count].max_seq=seq_num;
+					identifier_pme->ack_list[identifier_pme->ack_count].max_seq_payload=a_stream->ptcpdetail->datalen;
+				}
 			}
 			else
 			{
@@ -577,9 +615,18 @@ void record_ack(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a
 				{
 					if(identifier_pme->ack_list[i].ack_id==ack_num)
 					{
-						identifier_pme->ack_list[i].payload_bytes=identifier_pme->ack_list[i].payload_bytes+a_stream->ptcpdetail->datalen;
+						identifier_pme->ack_list[i].payload_bytes +=a_stream->ptcpdetail->datalen;
 						identifier_pme->ack_list[i].pak_count++;
 						flag=1;
+						if (identifier_pme->ack_list[i].min_seq==0)
+						{
+							identifier_pme->ack_list[i].min_seq=seq_num;
+						}
+						if (identifier_pme->ack_list[i].max_seq<seq_num)
+						{
+							identifier_pme->ack_list[i].max_seq=seq_num;
+							identifier_pme->ack_list[i].max_seq_payload=a_stream->ptcpdetail->datalen;
+						}
 						break;
 					}
 				}
@@ -590,6 +637,15 @@ void record_ack(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a
 					identifier_pme->ack_list[identifier_pme->ack_count].pak_count=1;
 					identifier_pme->ack_list[identifier_pme->ack_count].ack_id=ack_num;
 					identifier_pme->current_ack_num=ack_num;
+					if (identifier_pme->ack_list[identifier_pme->ack_count].min_seq==0)
+					{
+						identifier_pme->ack_list[identifier_pme->ack_count].min_seq=seq_num;
+					}
+					if (identifier_pme->ack_list[identifier_pme->ack_count].max_seq<seq_num)
+					{
+						identifier_pme->ack_list[identifier_pme->ack_count].max_seq=seq_num;
+						identifier_pme->ack_list[identifier_pme->ack_count].max_seq_payload=a_stream->ptcpdetail->datalen;
+					}
 				}
 			}
 			break;
@@ -1055,11 +1111,33 @@ void write_csv_ack(struct streaminfo *a_stream,  void **pme, int thread_seq,void
 	}
 	if (chunk_count>=5)
 	{
-		fprintf(traffic_identify_para.file,"%s\r\n",printaddr(&a_stream->addr,thread_seq));
+		fprintf(traffic_identify_para.file,"\r\n%s,",printaddr(&a_stream->addr,thread_seq));
 		for(int j=0;j<=identifier_pme->ack_count;j++)
 		{
 			if (identifier_pme->ack_list[j].payload_bytes> 6000)
-				fprintf(traffic_identify_para.file,"%ld\r\n",identifier_pme->ack_list[j].payload_bytes);
+				fprintf(traffic_identify_para.file,"%ld/",identifier_pme->ack_list[j].payload_bytes);
+		}
+	}
+
+	//fprintf(traffic_identify_para.file,"\n");
+}
+
+void write_csv_ack_seqLen(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_packet,stream_type a_stream_type)
+{
+	traffic_identify_pmeinfo* identifier_pme =(traffic_identify_pmeinfo*)*pme;
+	int chunk_count=0;
+	for(int i=0;i<=identifier_pme->ack_count;i++)
+	{
+		if (identifier_pme->ack_list[i].payload_bytes> 6000)
+			chunk_count++;
+	}
+	if (chunk_count>=5)
+	{
+		fprintf(traffic_identify_para.file,"\r\n%s,",printaddr(&a_stream->addr,thread_seq));
+		for(int j=0;j<=identifier_pme->ack_count;j++)
+		{
+			if (identifier_pme->ack_list[j].payload_bytes> 6000)
+				fprintf(traffic_identify_para.file,"%ld/",(identifier_pme->ack_list[j].max_seq-identifier_pme->ack_list[j].min_seq+identifier_pme->ack_list[j].max_seq_payload));
 		}
 	}
 
@@ -1182,7 +1260,8 @@ UCHAR traffic_process(struct streaminfo *a_stream,  void **pme, int thread_seq,v
 					identifier_pme->ML_ACK_labeled_flag=1;
 					if (target_sni.find("googlevideo")!=-1)
 					{
-						write_csv_ack(a_stream,pme,thread_seq,a_packet,a_stream_type);
+						write_csv_ack_seqLen(a_stream,pme,thread_seq,a_packet,a_stream_type);
+						//write_csv_ack(a_stream,pme,thread_seq,a_packet,a_stream_type);
 					}
 					ACK_label_fun(a_stream,pme,thread_seq,a_packet,a_stream_type);
 				case 1:
@@ -1234,8 +1313,9 @@ int TRAFFIC_IDENTIFY_AV_INIT(void)
 		time(&curtime);
 		struct tm *lt;
 		lt= localtime (&curtime);
-		snprintf(filename,128,"tilog/traffic_identify_av_%d-%d-%d-%d-%d-%d.csv",lt->tm_year+1900, lt->tm_mon+1, lt->tm_mday, lt->tm_hour, lt->tm_min, lt->tm_sec);
-		traffic_identify_para.file=fopen(filename,"w");
+		//snprintf(filename,128,"tilog/traffic_identify_av_%d-%d-%d-%d-%d-%d.csv",lt->tm_year+1900, lt->tm_mon+1, lt->tm_mday, lt->tm_hour, lt->tm_min, lt->tm_sec);
+		snprintf(filename,128,"tilog/traffic_identify_av.csv");
+		traffic_identify_para.file=fopen(filename,"a+");
 	}
 	return 0;
 }
