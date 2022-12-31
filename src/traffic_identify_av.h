@@ -9,7 +9,9 @@
 #include <stdlib.h>
 #include <time.h>
 #include <assert.h>
-
+#include <iostream>
+#include <map>
+#include<vector>
 #include "KafkaProducer.h"
 #include "cJSON.h"
 
@@ -37,6 +39,14 @@ struct ack_str
     unsigned long max_seq;
     long max_seq_payload;
 };
+
+//词典中的value元素
+struct word_node
+{
+    string video_id;
+    float trans_prob;
+} ;
+
 
 typedef enum
 {
@@ -108,9 +118,20 @@ typedef struct _traffic_identify_parameter
     unsigned int run_mode;
 
     KafkaProducer*	kafka_producer;
+
+    int video_chunk_size_max;
+    int video_chunk_size_min;
+    int symbol_num;
+    int word_len_long;
+    int word_len_short;
+    int word_num_long;
+    int word_num_short;
+    map<string,vector<word_node> > word_dictionary;
     
+    char video_fingerprint_dataset_file[512];
     char kafka_brokers[512];
 	char topic_name[128];
+    int symbol_range;
 }traffic_identify_parameter;
 
 typedef struct _traffic_identify_pme
@@ -153,6 +174,11 @@ typedef struct _traffic_identify_pme
     long* payload_burst_list_c2s;
     int* paknum_burst_list_c2s;
 
+    //识别结果，0:非视频;1:太短而无法进行匹配的视频;2:匹配完成
+    unsigned int video_title_type;
+    const char* video_id;
+    //视频内容识别ack数量等级
+    int video_title_ack_level;
     cJSON*	cjson_obj;
 
 }traffic_identify_pmeinfo;

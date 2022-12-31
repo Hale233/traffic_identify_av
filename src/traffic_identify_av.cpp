@@ -6,6 +6,7 @@
 2021.12.10新增输出字段流创建与淘汰时间
 2022.10.10增加视频指纹提取功能
 2022.11.10增加过滤重传包的功能
+2022.12.29增加lstf视频内容识别功能
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,20 +19,184 @@
 #include <MESA/MESA_prof_load.h>
 #include <MESA_handle_logger.h>
 #include <MESA/field_stat2.h>
-
+#include<fstream>
+#include<sstream>
+#include<vector>
+#include<cstring> 
 #include "traffic_identify_av.h"
-
+using namespace std;
 traffic_identify_parameter traffic_identify_para;
 //static const char* g_stream_type[TYPE_NUM] ={"TCP","UDP","SSL"};
 
+vector<word_node> word_node_vector_creat(string video_id,float trans_prob)
+{
+	vector<word_node> tmp_word_array;
+	word_node cur_word_node;
+	cur_word_node.trans_prob=trans_prob;
+	cur_word_node.video_id=video_id;
+	tmp_word_array.push_back(cur_word_node);
+	return tmp_word_array;
+}
+
+word_node word_node_creat(string video_id,float trans_prob)
+{
+	word_node cur_word_node;
+	cur_word_node.trans_prob=trans_prob;
+	cur_word_node.video_id=video_id;
+	return cur_word_node;
+}
+
+/*块大小转换为符号下标*/
+int chunk2symbol(int chunk)
+{
+	int symbol=0;
+	if (chunk >= traffic_identify_para.video_chunk_size_max)
+		symbol=traffic_identify_para.symbol_num-1;
+	else if (chunk <= traffic_identify_para.video_chunk_size_min)
+		symbol=0;
+	else
+		symbol=(chunk-traffic_identify_para.video_chunk_size_min)/traffic_identify_para.symbol_range;
+	return symbol;
+}
+
+void word_dictionary_init()
+{
+	traffic_identify_para.word_dictionary.clear();
+	//读取离线指纹文件，并存入到fileArray中
+	ifstream inFile(traffic_identify_para.video_fingerprint_dataset_file);
+	string lineStr;
+	vector<vector<string> > fileArray;
+	while (getline(inFile, lineStr)) 
+	{
+		stringstream ss(lineStr);
+		string str;
+		vector<string> lineArray;
+		while (getline(ss, str, ','))
+		{
+			lineArray.push_back(str);
+		}
+		fileArray.push_back(lineArray);
+	}
+	//遍历fileArray中的每一个视频指纹
+	//符号表范围
+	traffic_identify_para.symbol_range=(traffic_identify_para.video_chunk_size_max-traffic_identify_para.video_chunk_size_min)/traffic_identify_para.symbol_num;
+	for (int i=0;i<fileArray.size();i++)
+	{	
+		if (fileArray[i][2]!="video")
+			continue;
+		string video_id=fileArray[i][0];//指纹ID
+		stringstream fingerprint_string(fileArray[i][4]);
+		//cout<<fileArray[i][4]<<endl;
+		string finger_element_string;
+		vector<int> finger_array;//指纹序列
+		vector<int> word_gen_array;//用于词生成
+		int tmp_chunk_size;
+		int chunk;
+		int bin_index_cur;
+		string cur_word;
+		//遍历指纹中的每一个元素记录到finger_array中
+		while (getline(fingerprint_string, finger_element_string, '/'))
+		{
+			if (finger_element_string=="")
+			{
+				continue;
+			}
+			//cout<<tmp_chunk_size<<endl;
+			tmp_chunk_size=stoi(finger_element_string);
+			//去除小块
+			if (tmp_chunk_size>traffic_identify_para.video_chunk_size_min)
+				finger_array.push_back(tmp_chunk_size);
+		}
+		//去除比长词短的指纹
+		if (finger_array.size()<traffic_identify_para.word_len_long)
+			continue;
+		//遍历finger_array中的每一个元素生成词典,长词
+		//一次的转移概率
+		float cur_trans_prob=1.0/(float)(finger_array.size()-traffic_identify_para.word_len_long+1);
+		for (int j=0;j<finger_array.size();j++)
+		{
+			chunk=finger_array[j];
+			//得到每一个元素的下标
+			bin_index_cur=chunk2symbol(chunk);
+			//生成词cur_word
+			word_gen_array.push_back(bin_index_cur);
+			if (word_gen_array.size()<traffic_identify_para.word_len_long)
+				continue;
+			cur_word="";
+			for (int k=0;k<word_gen_array.size();k++)
+			{
+				cur_word +=to_string(word_gen_array[k])+'-';
+			}
+			//cout<<cur_word<<endl;
+			word_gen_array.erase(word_gen_array.begin());
+			//将词插入到词典中
+			if (traffic_identify_para.word_dictionary.find(cur_word)!= traffic_identify_para.word_dictionary.end())
+			{	
+				if(traffic_identify_para.word_dictionary[cur_word][0].video_id==video_id)
+				{
+					traffic_identify_para.word_dictionary[cur_word][0].trans_prob +=cur_trans_prob;
+				}
+				else
+				{
+					traffic_identify_para.word_dictionary[cur_word].insert(traffic_identify_para.word_dictionary[cur_word].begin(),word_node_creat(video_id,cur_trans_prob));
+				}
+			}
+			else
+			{
+				traffic_identify_para.word_dictionary[cur_word] = word_node_vector_creat(video_id,cur_trans_prob);
+				//traffic_identify_para.word_dictionary.emplace(cur_word,word_node_vector_creat(video_id,cur_trans_prob));
+				//cout<<cur_trans_prob<<video_id<<endl;
+			}
+		}
+		//短词
+		word_gen_array.clear();
+		
+		for (int j2=0;j2<finger_array.size();j2++)
+		{
+			chunk=finger_array[j2];
+			//得到每一个元素的下标
+			bin_index_cur=chunk2symbol(chunk);
+			//生成词cur_word
+			word_gen_array.push_back(bin_index_cur);
+			if (word_gen_array.size()<traffic_identify_para.word_len_short)
+				continue;
+			cur_word="";
+			for (int k2=0;k2<word_gen_array.size();k2++)
+			{
+				cur_word +=to_string(word_gen_array[k2])+'-';
+			}
+			//cout<<cur_word<<endl;
+			word_gen_array.erase(word_gen_array.begin());
+			//将词插入到词典中
+			if (traffic_identify_para.word_dictionary.find(cur_word)!= traffic_identify_para.word_dictionary.end())
+			{
+				if(traffic_identify_para.word_dictionary[cur_word][0].video_id==video_id)
+				{
+					traffic_identify_para.word_dictionary[cur_word][0].trans_prob +=cur_trans_prob;
+				}
+				else
+				{
+					traffic_identify_para.word_dictionary[cur_word].insert(traffic_identify_para.word_dictionary[cur_word].begin(),word_node_creat(video_id,cur_trans_prob));
+				}
+			}
+			else
+			{
+				traffic_identify_para.word_dictionary[cur_word] = word_node_vector_creat(video_id,cur_trans_prob);
+				//traffic_identify_para.word_dictionary.emplace(cur_word,tmp_word_array);
+			}
+		}
+		
+	}
+}
+
 int traffic_identify_para_read_main_conf(char* filename)
 {
-	char log_filename[256];	
+	char log_filename[256];
+	char video_fingerprint_dataset_file_[512];
 	short log_level;
 
 	MESA_load_profile_short_def(filename, "LOG", "log_level", &log_level, 10);
 	MESA_load_profile_string_def(filename, "LOG", "log_path", log_filename, sizeof(log_filename),"./tilog/traffic_identify_av_log");
-	
 	MESA_load_profile_uint_def(filename, "ACK", "ack_list_len", &traffic_identify_para.ack_list_len,15);
 	MESA_load_profile_uint_def(filename, "ACK", "time_win_size", &traffic_identify_para.time_win_size, 3);
 	MESA_load_profile_uint_def(filename, "ACK", "ack_payload_threshlod", &traffic_identify_para.ack_payload_threshlod, 100000);
@@ -61,6 +226,15 @@ int traffic_identify_para_read_main_conf(char* filename)
 	MESA_load_profile_uint_def(filename, "BURST", "burst_feature_output_chunk_count", &traffic_identify_para.burst_feature_output_chunk_count,15);
 
 	MESA_load_profile_uint_def(filename, "MODE", "run_mode", &traffic_identify_para.run_mode, 1);
+
+	MESA_load_profile_string_def(filename, "FINGER", "video_fingerprint_dataset_file", traffic_identify_para.video_fingerprint_dataset_file, sizeof(video_fingerprint_dataset_file_),"./ticonf/finger_dataset.csv");
+	MESA_load_profile_int_def(filename, "FINGER", "video_chunk_size_max", &traffic_identify_para.video_chunk_size_max, 2200000);
+	MESA_load_profile_int_def(filename, "FINGER", "video_chunk_size_min", &traffic_identify_para.video_chunk_size_min, 700000);
+	MESA_load_profile_int_def(filename, "FINGER", "symbol_num", &traffic_identify_para.symbol_num, 4000);
+	MESA_load_profile_int_def(filename, "FINGER", "word_len_long", &traffic_identify_para.word_len_long, 6);
+	MESA_load_profile_int_def(filename, "FINGER", "word_len_short", &traffic_identify_para.word_len_short, 2);
+	MESA_load_profile_int_def(filename, "FINGER", "word_num_long", &traffic_identify_para.word_num_long, 1);
+	MESA_load_profile_int_def(filename, "FINGER", "word_num_short", &traffic_identify_para.word_num_short, 2);
 
 	traffic_identify_para.log_handle = MESA_create_runtime_log_handle(log_filename,log_level);
 
@@ -112,6 +286,7 @@ int traffic_identify_para_read_main_conf(char* filename)
 									"{%s:%d} Kafka CreateTopicHandle %s succ.", 
 									__FILE__,__LINE__, traffic_identify_para.topic_name);
 	}
+	word_dictionary_init();
 	return 0;
 }
 
@@ -145,7 +320,7 @@ int init_pme(void** param, int thread_seq ,struct streaminfo *a_stream,stream_ty
 
 	identifier_pme->ack_count=0;
 	identifier_pme->current_ack_num=0;
-
+	identifier_pme->video_id="";
 	/*	包到达时间间隔相关
 	identifier_pme->time_interval_max_c2s=0;
 	identifier_pme->time_interval_max_s2c=0;
@@ -1122,6 +1297,145 @@ void write_csv_ack(struct streaminfo *a_stream,  void **pme, int thread_seq,void
 	//fprintf(traffic_identify_para.file,"\n");
 }
 
+void lstf_video_title_identification(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_packet,stream_type a_stream_type)
+{
+	traffic_identify_pmeinfo* identifier_pme =(traffic_identify_pmeinfo*)*pme;
+	vector<float> chunk_list;
+	float chunk_size;
+	//最后一个ACK块可能不完整，因此不计入统计
+	for(int i=0;i<identifier_pme->ack_count;i++)
+	{
+		if (identifier_pme->ack_list[i].payload_bytes> (traffic_identify_para.video_chunk_size_min*1.00135177+1119))
+		{
+			chunk_size=(float)(identifier_pme->ack_list[i].payload_bytes-1119)/1.00135177;
+			chunk_list.push_back(chunk_size);
+			if (chunk_list.size()==traffic_identify_para.word_len_long-1+traffic_identify_para.word_num_long)
+				break;
+		}
+	}
+	//保证进行匹配的单词个数
+	if (chunk_list.size()<traffic_identify_para.word_len_long-1+traffic_identify_para.word_num_long)
+	{
+		//cout<<"chunk size:"<<chunk_list.size()<<endl;
+		identifier_pme->video_title_type=1;
+		return;
+	}
+	vector<int> word_gen_array;//用于词生成
+	map<string,float> match_map;
+	string cur_word;
+	int word_count=0;
+	for (int j=0;j<chunk_list.size();j++)
+	{
+		float chunk=chunk_list[j];
+		int bin_index_cur=0;
+		bin_index_cur=chunk2symbol(chunk);
+		//生成词cur_word
+		word_gen_array.push_back(bin_index_cur);
+		if (word_gen_array.size()<traffic_identify_para.word_len_long)
+			continue;
+		cur_word="";
+		for (int k=0;k<word_gen_array.size();k++)
+		{
+			cur_word +=to_string(word_gen_array[k])+'-';
+		}
+		cout<<cur_word<<endl;
+		word_gen_array.erase(word_gen_array.begin());
+		//统计匹配概率，并记录到match_map中
+		if (traffic_identify_para.word_dictionary.find(cur_word) != traffic_identify_para.word_dictionary.end())
+		{
+			for (int k=0;k<traffic_identify_para.word_dictionary[cur_word].size();k++)
+			{
+				string cur_key=traffic_identify_para.word_dictionary[cur_word][k].video_id;
+				float cur_val=traffic_identify_para.word_dictionary[cur_word][k].trans_prob;
+				if (match_map.find(cur_key)==match_map.end())
+					match_map[cur_key]=cur_val;
+				else
+					match_map[cur_key] +=cur_val;
+			}
+		}
+		word_count ++;
+		if (word_count==traffic_identify_para.word_num_long)
+			break;
+	}
+	//找到转移概率最大的指纹
+	if (match_map.size()!=0)
+	{
+		float max_prob=0;
+		string target_id="";
+		for (auto& element: match_map)
+		{
+			if (element.second>max_prob)
+			{
+				max_prob=element.second;
+				target_id=element.first;
+			}
+		}
+		identifier_pme->video_id=target_id.c_str();
+		identifier_pme->video_title_type=2;
+		cout<<target_id<<endl;
+		return;
+	}
+	//二阶段匹配
+	match_map.clear();
+	word_gen_array.clear();
+	word_count=0;
+	for (int j=0;j<chunk_list.size();j++)
+	{
+		float chunk=chunk_list[j];
+		int bin_index_cur=0;
+		bin_index_cur=chunk2symbol(chunk);
+		//生成词cur_word
+		word_gen_array.push_back(bin_index_cur);
+		if (word_gen_array.size()<traffic_identify_para.word_len_short)
+			continue;
+		cur_word="";
+		for (int k=0;k<word_gen_array.size();k++)
+		{
+			cur_word +=to_string(word_gen_array[k])+'-';
+		}
+		cout<<cur_word<<endl;
+		word_gen_array.erase(word_gen_array.begin());
+		//统计匹配概率，并记录到match_map中
+		if (traffic_identify_para.word_dictionary.find(cur_word) != traffic_identify_para.word_dictionary.end())
+		{
+			for (int k=0;k<traffic_identify_para.word_dictionary[cur_word].size();k++)
+			{
+				string cur_key=traffic_identify_para.word_dictionary[cur_word][k].video_id;
+				float cur_val=traffic_identify_para.word_dictionary[cur_word][k].trans_prob;
+				if (match_map.find(cur_key)==match_map.end())
+					match_map[cur_key]=cur_val;
+				else
+					match_map[cur_key] +=cur_val;
+			}
+		}
+		word_count ++;
+		if (word_count==traffic_identify_para.word_num_short)
+			break;
+	}
+	//找到转移概率最大的指纹
+	cout<<match_map.size()<<endl;
+	if (match_map.size()!=0)
+	{
+		float max_prob=0;
+		string target_id="";
+		for (auto& element: match_map)
+		{	
+			if (element.second>max_prob)
+			{
+				max_prob=element.second;
+				target_id=element.first;
+			}
+		}
+		identifier_pme->video_id=target_id.c_str();
+		identifier_pme->video_title_type=2;
+		cout<<target_id<<endl;
+		return;
+	}
+	identifier_pme->video_title_type=2;
+	cout<<"match fail"<<endl;
+	return;
+}
+
 void write_csv_ack_seqLen(struct streaminfo *a_stream,  void **pme, int thread_seq,void *a_packet,stream_type a_stream_type)
 {
 	traffic_identify_pmeinfo* identifier_pme =(traffic_identify_pmeinfo*)*pme;
@@ -1224,6 +1538,31 @@ UCHAR traffic_process(struct streaminfo *a_stream,  void **pme, int thread_seq,v
 				identifier_pme->pre_time_s2c=cur_time;
 			}
 			record_ack(a_stream,pme,thread_seq,a_packet,a_stream_type);
+			switch(a_stream_type)
+			{
+			case TCP:
+				target_sni=identifier_pme->SNI;
+				//未完成匹配的视频流
+				if (target_sni.find("googlevideo")!=-1 && identifier_pme->video_title_type!=2)
+				{
+					if (identifier_pme->ack_count>=identifier_pme->video_title_ack_level*3+traffic_identify_para.word_num_long*2+1)
+					{	
+						//cout<<"ack level:"<<identifier_pme->video_title_ack_level<<" ack count:"<<identifier_pme->ack_count<<endl;
+						identifier_pme->video_title_ack_level ++;
+						lstf_video_title_identification(a_stream,pme,thread_seq,a_packet,a_stream_type);
+						if (identifier_pme->video_title_type==2)
+						{
+							cout<<"end"<<identifier_pme->video_title_ack_level<<endl;
+							return APP_STATE_DROPME;
+						}
+					}
+				}
+				break;
+			case UDP:
+				break;
+			default:
+				break;
+			}
 			/* 控制提取前n秒的ack块
 			if (time_duration<traffic_identify_para.time_win_size)
 			{
@@ -1258,10 +1597,13 @@ UCHAR traffic_process(struct streaminfo *a_stream,  void **pme, int thread_seq,v
 			{
 				case 0:
 					identifier_pme->ML_ACK_labeled_flag=1;
-					if (target_sni.find("googlevideo")!=-1)
+					//对短流进行匹配
+					if (target_sni.find("googlevideo")!=-1 && identifier_pme->video_title_type!=2)
 					{
-						write_csv_ack_seqLen(a_stream,pme,thread_seq,a_packet,a_stream_type);
+						cout<<"matching..."<<endl;
+						//write_csv_ack_seqLen(a_stream,pme,thread_seq,a_packet,a_stream_type);
 						//write_csv_ack(a_stream,pme,thread_seq,a_packet,a_stream_type);
+						lstf_video_title_identification(a_stream,pme,thread_seq,a_packet,a_stream_type);
 					}
 					ACK_label_fun(a_stream,pme,thread_seq,a_packet,a_stream_type);
 				case 1:
