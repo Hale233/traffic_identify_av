@@ -7,13 +7,14 @@
 2022.10.10增加视频指纹提取功能
 2022.11.10增加过滤重传包的功能
 2022.12.29增加lstf视频内容识别功能
+2023.04.28指纹识别增加tf-idf全局概率判断
 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stream.h>
 #include <sys/time.h>
-
+#include <cmath>
 #include <math.h>
 #include <dlfcn.h>
 #include <MESA/MESA_prof_load.h>
@@ -61,7 +62,8 @@ int chunk2symbol(int chunk)
 
 void word_dictionary_init()
 {
-	traffic_identify_para.word_dictionary.clear();
+	traffic_identify_para.word_dictionary_local.clear();
+	traffic_identify_para.word_dictionary_global.clear();
 	//读取离线指纹文件，并存入到fileArray中
 	ifstream inFile(traffic_identify_para.video_fingerprint_dataset_file);
 	string lineStr;
@@ -113,6 +115,7 @@ void word_dictionary_init()
 		//遍历finger_array中的每一个元素生成词典,长词
 		//一次的转移概率
 		float cur_trans_prob=1.0/(float)(finger_array.size()-traffic_identify_para.word_len_long+1);
+		int word_count_long=0;
 		for (int j=0;j<finger_array.size();j++)
 		{
 			chunk=finger_array[j];
@@ -129,28 +132,47 @@ void word_dictionary_init()
 			}
 			//cout<<cur_word<<endl;
 			word_gen_array.erase(word_gen_array.begin());
-			//将词插入到词典中
-			if (traffic_identify_para.word_dictionary.find(cur_word)!= traffic_identify_para.word_dictionary.end())
+			//将词插入到局部概率词典中
+			if (traffic_identify_para.word_dictionary_local.find(cur_word)!= traffic_identify_para.word_dictionary_local.end())
 			{	
-				if(traffic_identify_para.word_dictionary[cur_word][0].video_id==video_id)
+				if(traffic_identify_para.word_dictionary_local[cur_word][0].video_id==video_id)
 				{
-					traffic_identify_para.word_dictionary[cur_word][0].trans_prob +=cur_trans_prob;
+					traffic_identify_para.word_dictionary_local[cur_word][0].trans_prob +=cur_trans_prob;
 				}
 				else
 				{
-					traffic_identify_para.word_dictionary[cur_word].insert(traffic_identify_para.word_dictionary[cur_word].begin(),word_node_creat(video_id,cur_trans_prob));
+					traffic_identify_para.word_dictionary_local[cur_word].insert(traffic_identify_para.word_dictionary_local[cur_word].begin(),word_node_creat(video_id,cur_trans_prob));
 				}
 			}
 			else
 			{
-				traffic_identify_para.word_dictionary[cur_word] = word_node_vector_creat(video_id,cur_trans_prob);
-				//traffic_identify_para.word_dictionary.emplace(cur_word,word_node_vector_creat(video_id,cur_trans_prob));
+				traffic_identify_para.word_dictionary_local[cur_word] = word_node_vector_creat(video_id,cur_trans_prob);
+				//traffic_identify_para.word_dictionary_local.emplace(cur_word,word_node_vector_creat(video_id,cur_trans_prob));
 				//cout<<cur_trans_prob<<video_id<<endl;
 			}
+			//将词插入到全局概率词典中
+			if (traffic_identify_para.word_dictionary_global.find(cur_word)!= traffic_identify_para.word_dictionary_global.end())
+			{	
+				traffic_identify_para.word_dictionary_global[cur_word] += 1;
+			}
+			else
+			{
+				traffic_identify_para.word_dictionary_global[cur_word] = 1;
+			}
+			word_count_long ++;
 		}
+		traffic_identify_para.word_count_long=word_count_long;
+		/*
+		//计算全局概率表
+		for (auto& long_word_element: traffic_identify_para.word_dictionary_global)
+		{
+			float prob=log(word_count_long/(long_word_element.second+1));
+			traffic_identify_para.word_dictionary_global[long_word_element.first]=prob;
+		}
+		*/
 		//短词
 		word_gen_array.clear();
-		
+		int word_count_short=0;
 		for (int j2=0;j2<finger_array.size();j2++)
 		{
 			chunk=finger_array[j2];
@@ -168,24 +190,34 @@ void word_dictionary_init()
 			//cout<<cur_word<<endl;
 			word_gen_array.erase(word_gen_array.begin());
 			//将词插入到词典中
-			if (traffic_identify_para.word_dictionary.find(cur_word)!= traffic_identify_para.word_dictionary.end())
+			if (traffic_identify_para.word_dictionary_local.find(cur_word)!= traffic_identify_para.word_dictionary_local.end())
 			{
-				if(traffic_identify_para.word_dictionary[cur_word][0].video_id==video_id)
+				if(traffic_identify_para.word_dictionary_local[cur_word][0].video_id==video_id)
 				{
-					traffic_identify_para.word_dictionary[cur_word][0].trans_prob +=cur_trans_prob;
+					traffic_identify_para.word_dictionary_local[cur_word][0].trans_prob +=cur_trans_prob;
 				}
 				else
 				{
-					traffic_identify_para.word_dictionary[cur_word].insert(traffic_identify_para.word_dictionary[cur_word].begin(),word_node_creat(video_id,cur_trans_prob));
+					traffic_identify_para.word_dictionary_local[cur_word].insert(traffic_identify_para.word_dictionary_local[cur_word].begin(),word_node_creat(video_id,cur_trans_prob));
 				}
 			}
 			else
 			{
-				traffic_identify_para.word_dictionary[cur_word] = word_node_vector_creat(video_id,cur_trans_prob);
-				//traffic_identify_para.word_dictionary.emplace(cur_word,tmp_word_array);
+				traffic_identify_para.word_dictionary_local[cur_word] = word_node_vector_creat(video_id,cur_trans_prob);
+				//traffic_identify_para.word_dictionary_local.emplace(cur_word,tmp_word_array);
 			}
+			//将词插入到全局概率词典中
+			if (traffic_identify_para.word_dictionary_global.find(cur_word)!= traffic_identify_para.word_dictionary_global.end())
+			{	
+				traffic_identify_para.word_dictionary_global[cur_word] += 1;
+			}
+			else
+			{
+				traffic_identify_para.word_dictionary_global[cur_word] = 1;
+			}
+			word_count_short ++;
 		}
-		
+		traffic_identify_para.word_count_short=word_count_short;
 	}
 }
 
@@ -1341,16 +1373,17 @@ void lstf_video_title_identification(struct streaminfo *a_stream,  void **pme, i
 		cout<<cur_word<<endl;
 		word_gen_array.erase(word_gen_array.begin());
 		//统计匹配概率，并记录到match_map中
-		if (traffic_identify_para.word_dictionary.find(cur_word) != traffic_identify_para.word_dictionary.end())
+		if (traffic_identify_para.word_dictionary_local.find(cur_word) != traffic_identify_para.word_dictionary_local.end())
 		{
-			for (int k=0;k<traffic_identify_para.word_dictionary[cur_word].size();k++)
+			float global_prob=log(traffic_identify_para.word_count_long/(traffic_identify_para.word_dictionary_global[cur_word]+1));
+			for (int k=0;k<traffic_identify_para.word_dictionary_local[cur_word].size();k++)
 			{
-				string cur_key=traffic_identify_para.word_dictionary[cur_word][k].video_id;
-				float cur_val=traffic_identify_para.word_dictionary[cur_word][k].trans_prob;
+				string cur_key=traffic_identify_para.word_dictionary_local[cur_word][k].video_id;
+				float cur_val=traffic_identify_para.word_dictionary_local[cur_word][k].trans_prob;
 				if (match_map.find(cur_key)==match_map.end())
-					match_map[cur_key]=cur_val;
+					match_map[cur_key]=cur_val+global_prob*100;
 				else
-					match_map[cur_key] +=cur_val;
+					match_map[cur_key] +=cur_val+global_prob*100;
 			}
 		}
 		word_count ++;
@@ -1396,16 +1429,17 @@ void lstf_video_title_identification(struct streaminfo *a_stream,  void **pme, i
 		cout<<cur_word<<endl;
 		word_gen_array.erase(word_gen_array.begin());
 		//统计匹配概率，并记录到match_map中
-		if (traffic_identify_para.word_dictionary.find(cur_word) != traffic_identify_para.word_dictionary.end())
+		if (traffic_identify_para.word_dictionary_local.find(cur_word) != traffic_identify_para.word_dictionary_local.end())
 		{
-			for (int k=0;k<traffic_identify_para.word_dictionary[cur_word].size();k++)
+			float global_prob=log(traffic_identify_para.word_count_short/(traffic_identify_para.word_dictionary_global[cur_word]+1));
+			for (int k=0;k<traffic_identify_para.word_dictionary_local[cur_word].size();k++)
 			{
-				string cur_key=traffic_identify_para.word_dictionary[cur_word][k].video_id;
-				float cur_val=traffic_identify_para.word_dictionary[cur_word][k].trans_prob;
+				string cur_key=traffic_identify_para.word_dictionary_local[cur_word][k].video_id;
+				float cur_val=traffic_identify_para.word_dictionary_local[cur_word][k].trans_prob;
 				if (match_map.find(cur_key)==match_map.end())
-					match_map[cur_key]=cur_val;
+					match_map[cur_key]=cur_val+global_prob*100;
 				else
-					match_map[cur_key] +=cur_val;
+					match_map[cur_key] +=cur_val+global_prob*100;
 			}
 		}
 		word_count ++;

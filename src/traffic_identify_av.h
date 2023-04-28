@@ -126,7 +126,10 @@ typedef struct _traffic_identify_parameter
     int word_len_short;
     int word_num_long;
     int word_num_short;
-    map<string,vector<word_node> > word_dictionary;
+    map<string,vector<word_node> > word_dictionary_local;
+    map<string,float > word_dictionary_global;
+    int word_count_long;
+    int word_count_short;
     
     char video_fingerprint_dataset_file[512];
     char kafka_brokers[512];
